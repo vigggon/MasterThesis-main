@@ -20,13 +20,13 @@ class TemporalAttention(nn.Module):
 
 
 class LSTMModel(nn.Module):
-    """Bidirectional LSTM with temporal attention."""
+    """1-layer Bidirectional LSTM with temporal attention."""
 
     def __init__(
         self,
         input_size: int,
         hidden_size: int = 128,
-        num_layers: int = 2,
+        num_layers: int = 1,
         dropout: float = 0.2,
         num_classes: int = 2,
     ):

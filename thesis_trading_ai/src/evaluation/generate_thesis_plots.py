@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 # Ensure project root is in path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from evaluation.backtester import load_backtest_data_and_predictions, equity_curve, max_drawdown
+from backtesting.backtester import load_backtest_data_and_predictions, equity_curve, max_drawdown
 from utils import RESULTS_ROOT, MIN_ATR, DAILY_STOP_R, DAILY_TP_R
 
 def generate_assets():

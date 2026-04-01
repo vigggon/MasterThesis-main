@@ -1,0 +1,2 @@
+total_return,sharpe_ratio,max_drawdown_units,max_drawdown_pct,cvar95,profit_factor,n_trades,win_rate,risk_pct_per_trade,final_equity_pct,realistic_return_pct_low,realistic_return_pct_high
+26.10431015046793,0.4920756174212261,-2.438355643367101,-0.04293320648071592,-1.0216249262835213,1.3550349769450738,152,0.4407894736842105,0.005,1.135354270354492,13.052155075233966,19.57823261285095

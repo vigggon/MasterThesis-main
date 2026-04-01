@@ -10,7 +10,7 @@ from collections import defaultdict
 import argparse
 
 from utils import RESULTS_ROOT
-from evaluation.backtester import load_backtest_data_and_predictions
+from backtesting.backtester import load_backtest_data_and_predictions
 
 def run_stability_analysis(model_name: str = "lstm", spread_points: float = 1.0, commission_points: float = 0.0) -> dict:
     # returns: array of R-multiples for every bar

@@ -1,4 +1,4 @@
 {
-  "threshold": 0.4,
-  "val_reward": 729.6999999999688
+  "threshold": 0.35,
+  "val_reward": 609.2999999999605
 }

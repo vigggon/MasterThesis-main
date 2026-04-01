@@ -1,248 +1,526 @@
-# Thesis Results Summary
+# Chapter 4 — Main Results
 
-**Title:** Comparing LSTM and Transformer Stability on High-Volatility Nasdaq100 Opening Session
+This chapter is divided into two sections as specified. Section 4.1 provides a tutorial-style exposition of the technical implementation, enabling full reproducibility. Section 4.2 presents the experimental results with tables, figures, and detailed discussion.
 
-**Date:** February 2026
-
----
-
-## Research Question
-
-How do LSTM and Transformer architectures compare in terms of stability and profitability when trading the Nasdaq100 opening session (09:30-11:30 NY) with realistic transaction costs?
+For reproducibility purposes, all code is available at: **<https://github.com/vigggon/MasterThesis-main>**. A permanent link for the code can also be found at: `[SOFTWARE_HERITAGE_LINK — to be added upon submission]`.
 
 ---
 
-## Methodology
+# 4.1 Technical Development
 
-### Data
-- **Source**: Kaggle (2019-08 to 2024-08) + MetaTrader 5 (2024-08 to 2026-01)
-- **Frequency**: 5-minute bars during 09:30-11:30 NY opening session
-- **Total samples**: 39,612 bars (36,473 training, 3,139 backtest)
+This section describes the end-to-end implementation of the trading system, from raw tick data ingestion through model deployment. The codebase is implemented in Python 3.11 using PyTorch 2.1.0, and is structured as a sequential pipeline where each stage produces intermediate outputs consumed by the next. The system was not derived from an existing tutorial or open-source trading framework; all components were developed from scratch for this thesis.
 
-### Training Configuration
-- **Training period**: August 2019 – August 2025 (6 years)
-- **Backtest period**: August 2025 – January 2026 (180 days, unseen)
-- **Recency weighting**: Exponential (α=2.0) → 2025 data weighted 7.4× more than 2019
-- **Features**: 43 features including:
-  - Technical indicators (ATR, RSI, VWAP, returns)
-  - Volatility regime (ATR vs 20-period MA)
-  - Overnight gaps and session context
-  - Distance from previous session high/low
-  - Range expansion metrics
+## 4.1.1 Project Architecture
 
-### Trading Parameters
-- **Stop Loss**: 1.0 × ATR
-- **Take Profit**: 2.0 × ATR
-- **Break-even win rate**: 33.3%
-- **Max holding period**: 12 candles (1 hour)
-- **Transaction cost training**: 1.5 units penalty per trade
-- **Realistic spread**: 0.2 units (~1-2 index points on NAS100)
+The project follows a modular structure organised around a central configuration file and six sequential pipeline stages:
 
-### Model Architectures
-**LSTM:**
-- 3 layers, 128 hidden units
-- Dropout: 0.2
-- Input: 24-bar sequences × 43 features
+```text
+thesis_trading_ai/
+├── config/config.yaml           # Central parameter source
+├── src/
+│   ├── data/                    # Stage 1: Data acquisition
+│   ├── features/                # Stages 2-4: Session filter, features, labels
+│   ├── models/                  # Architecture definitions
+│   ├── training/                # Stage 5: Training & sweep
+│   ├── backtesting/             # Stage 6: Event-driven backtester
+│   └── live/                    # Stage 7: MT5 live execution
+├── scripts/                     # High-level entrypoints
+├── experiments/                 # Model checkpoints per configuration
+└── results/                     # Output CSVs and plots
+```
 
-**Transformer:**
-- 2 encoder layers, 128 d_model
-- 4 attention heads
-- Dropout: 0.2
-- Input: 24-bar sequences × 43 features
+All tuneable parameters — including ATR periods, stop-loss/take-profit multiples, trading session boundaries, and risk allocation — are centralised in `config/config.yaml` and loaded at runtime through a singleton configuration manager. This design ensures that experimental conditions can be modified in a single location without touching source code.
 
-Both trained with:
-- Focal loss (γ=3.0) + class weights
-- Adam optimizer (lr=2e-3, weight_decay=1e-4)
-- LR scheduling on validation loss
-- Early stopping (patience=40 epochs)
-- Best checkpoint selection by validation reward (transaction-cost-aware, default=1.5 units)
-- **Transaction cost penalty enabled by default** (use `--transaction-cost 0` to disable)
+## 4.1.2 Data Acquisition and Preprocessing (Stage 1–2)
+
+The pipeline begins by merging two data sources into a continuous 5-minute OHLCV series. The Kaggle dataset (August 2019 – August 2024) is loaded first, followed by the MetaTrader 5 export (August 2024 – February 2026). Column names are normalised to a canonical schema, and the two DataFrames are concatenated chronologically:
+
+```python
+# data_download.py — Merge logic (simplified)
+df_kaggle = pd.read_csv(kaggle_path)
+df_mt5 = pd.read_csv(mt5_export_path)
+
+# Normalise column names: "Time" → "datetime", "Open" → "open", etc.
+for c in df.columns:
+    col_map[c] = c.strip().lower()
+
+df = pd.concat([df_kaggle, df_mt5]).sort_values("datetime").reset_index(drop=True)
+```
+
+The merged dataset is then filtered to the New York Open session (09:30–11:30 EST) using timezone-aware datetime comparison. This stage eliminates approximately 80% of bars, retaining only the high-volatility window targeted by the research question:
+
+```python
+# session_filter.py — Core filter
+def filter_open_session(df: pd.DataFrame) -> pd.DataFrame:
+    t = df["datetime"].dt.tz_convert(NY_TZ).dt.time
+    start = pd.Timestamp("09:30").time()
+    end = pd.Timestamp("11:30").time()
+    mask = (t >= start) & (t <= end)
+    return df.loc[mask].copy()
+```
+
+## 4.1.3 Feature Engineering (Stage 3)
+
+Session-filtered bars are resampled from 5-minute to 10-minute resolution using standard OHLCV aggregation rules (first open, max high, min low, last close, sum volume). Over 30 scale-invariant features are then computed. The design principle is that all features are expressed as ratios, percentages, or normalised values to prevent the model from being dominated by raw price magnitudes.
+
+Key feature groups include:
+
+**Volatility indicators** — ATR(14) serves as the primary volatility estimate and is used downstream for position sizing and barrier placement. The implementation follows the standard True Range definition:
+
+```python
+def atr(high, low, close, period):
+    prev = close.shift(1)
+    tr = pd.concat([high - low, (high - prev).abs(), (low - prev).abs()], axis=1).max(axis=1)
+    return tr.rolling(period, min_periods=1).mean()
+```
+
+**Cyclical time encodings** — Rather than feeding raw timestamps, which would create artificial discontinuities at midnight, sinusoidal encodings preserve the circular nature of time:
+
+```python
+minutes = dt.dt.hour * 60 + dt.dt.minute
+df["time_sin"] = np.sin(2 * np.pi * minutes / 1440.0)
+df["time_cos"] = np.cos(2 * np.pi * minutes / 1440.0)
+```
+
+Additional features include RSI(14), Bollinger Band width and normalised position, VWAP deviation, EMA-9 and EMA-21 distances, volume moving average ratios, overnight gap percentage, and multi-scale cumulative returns (1-hour and 2-hour windows). A volatility regime ratio compares current ATR to the value 6 bars (1 hour) prior to capture regime transitions.
+
+## 4.1.4 Triple-Barrier Labelling (Stage 4)
+
+Labels are generated using the Triple-Barrier Method. For each bar, the labeller simulates both a hypothetical long and short position forward through subsequent bars, checking whether the take-profit barrier (3.0 × ATR above/below entry), stop-loss barrier (1.0 × ATR), or maximum holding period (12 candles = 2 hours) is reached first:
+
+```python
+def label_candle_3class(row, future, atr_col="atr_14",
+                        sl_mult=1.0, tp_mult=3.0, max_hold=12):
+    long_win, long_bar = _simulate_long(row, future, ...)
+    short_win, short_bar = _simulate_short(row, future, ...)
+    if long_win and not short_win:
+        return 1   # Long
+    if short_win and not long_win:
+        return 2   # Short
+    if long_win and short_win:
+        return 1 if long_bar <= short_bar else 2  # Earlier wins
+    return 0       # Hold
+```
+
+The asymmetric 3:1 reward-to-risk ratio means the theoretical break-even win rate is 25%, creating a profitable framework even with modest directional accuracy. The three-class output (Hold=0, Long=1, Short=2) allows the model to abstain from trading when confidence is insufficient.
+
+## 4.1.5 Sequence Construction and Temporal Split (Stage 5)
+
+Labelled bars are assembled into overlapping sequences of length $W = 24$ (4 hours of 10-minute bars). Each sequence produces a feature tensor of shape $(W, F)$ where $F$ is the number of engineered features, paired with the label at the final timestep. A gap detector prevents sequences from spanning interruptions greater than 14 days:
+
+```python
+# dataset_builder.py — Gap-aware sequence construction
+dt64 = dates.astype("datetime64[ns]")
+diffs = dt64[1:] - dt64[:-1]
+gap_indices = np.where(diffs > np.timedelta64(14, 'D'))[0] + 1
+
+for i in range(window, len(df)):
+    # Skip if a gap > 14 days falls inside this window
+    if current_gap_ptr < len(gap_indices) and gap_indices[current_gap_ptr] < i:
+        continue
+    X.append(block[feature_cols].values)
+    y.append(int(lab))
+```
+
+The temporal split allocates all data chronologically preceding August 29, 2025 for training, with the subsequent 180 days (August 29, 2025 – February 23, 2026) reserved as the strict out-of-sample backtest set. Within the training set, the last 15% is held out as a validation subset for checkpoint selection and threshold tuning.
+
+## 4.1.6 Model Architectures
+
+The two architectures differ substantially in both inductive bias and parameter count. The winning BiLSTM configuration (1 layer, 128 units, bidirectional with temporal attention) totals **210,820 trainable parameters**, while the winning Transformer (3 layers, 8 heads, d_model=64) totals **103,427 parameters**. Notably, the LSTM is the higher-capacity model — approximately twice the parameter count — which is the inverse of the relationship commonly assumed in deep learning literature. This difference arises directly from the bidirectional design doubling the effective hidden state and the additional temporal attention projection layer. Both architectures were subject to identical regularisation and early stopping criteria, so any performance differences should be attributed to architectural inductive bias rather than capacity advantage.
+
+**Bidirectional LSTM with Temporal Attention** — The LSTM processes the input sequence bidirectionally, producing hidden states of size $2H$ at each timestep (forward and backward concatenated). A linear projection reduces this to $H$ dimensions, after which a learned temporal attention mechanism computes a weighted sum over timesteps:
+
+```python
+class TemporalAttention(nn.Module):
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.attn = nn.Linear(hidden_size, 1)
+
+    def forward(self, lstm_out):
+        scores = self.attn(lstm_out)          # (B, T, 1)
+        weights = F.softmax(scores, dim=1)    # (B, T, 1)
+        context = (weights * lstm_out).sum(dim=1)  # (B, H)
+        return context
+```
+
+This attention mechanism allows the model to focus on the most informative timesteps within the lookback window rather than relying solely on the final hidden state.
+
+**Transformer Encoder** — The Transformer projects input features to a $d_{model}$-dimensional embedding, adds sinusoidal positional encodings, and processes the sequence through stacked encoder layers with Pre-Layer Normalisation (`norm_first=True`). Classification uses the last-token representation rather than global average pooling:
+
+```python
+class TransformerModel(nn.Module):
+    def __init__(self, input_size, d_model=64, nhead=8, num_layers=3, ...):
+        self.proj = nn.Linear(input_size, d_model)
+        self.pos = PositionalEncoding(d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead,
+            dim_feedforward=128, dropout=dropout,
+            batch_first=True, norm_first=True  # Pre-LN
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+        self.fc = nn.Linear(d_model, num_classes)
+
+    def forward(self, x):
+        x = self.proj(x)
+        x = self.pos(x)
+        x = self.transformer(x)
+        x = x[:, -1, :]  # Last-token pooling
+        return self.fc(x)
+```
+
+The Pre-LN design follows Xiong et al. (2020), which demonstrated that placing layer normalisation before the attention and feedforward sublayers reduces gradient variance at initialisation and eliminates the need for learning rate warm-up schedules.
+
+## 4.1.7 Training Protocol
+
+Both architectures are trained with identical hyperparameters to isolate architectural effects. The loss function is Focal Loss with $\gamma = 3.0$ and label smoothing $\epsilon = 0.02$, combined with inverse-frequency class weighting:
+
+```python
+# Dynamic class weights based on training set distribution
+count_tensor = torch.ones(num_classes)
+for c, cnt in zip(uniq.tolist(), counts.tolist()):
+    count_tensor[c] = float(cnt)
+class_weights = (y_train.size(0) / (num_classes * count_tensor))
+
+criterion = FocalLoss(weight=class_weights, gamma=3.0, label_smoothing=0.02)
+```
+
+**Recency-weighted sampling** ensures that more recent observations are sampled more frequently during training, reflecting the non-stationary nature of financial time series. The weighting follows an exponential distribution with temperature $\alpha = 2.0$:
+
+```python
+recency_alpha = 2.0
+sample_weights = torch.exp(recency_alpha * torch.arange(n_train) / n_train)
+sampler = WeightedRandomSampler(sample_weights, num_samples=n_train, replacement=True)
+```
+
+At this temperature, observations from late 2025 are approximately $e^{2.0} \approx 7.4$ times more likely to appear in each batch than those from early 2019.
+
+**Checkpoint selection** uses a cost-aware validation reward rather than classification loss. At each epoch, the model generates predictions on the validation set, and trades are simulated with a 0.1R transaction cost penalty. The checkpoint with the highest cumulative reward among those executing at least 5 trades is saved:
+
+```python
+if n_val_trades >= 5 and vr > best_val_reward:
+    best_val_reward = vr
+    torch.save({"model_state_dict": model.state_dict(), ...}, "best.pt")
+```
+
+Post-training, a dynamic decision threshold $\tau$ is tuned via grid search over $[0.25, 0.70]$ on the validation set, selecting the value that maximises risk-adjusted reward.
+
+## 4.1.8 Event-Driven Backtesting Engine (Stage 6)
+
+The backtester replays the out-of-sample period bar-by-bar, enforcing a strict single-position constraint: a new trade cannot open until the previous one closes. For each bar where the model predicts Long or Short with probability exceeding the threshold $\tau$, the engine resolves the trade by walking forward through subsequent bars:
+
+```python
+# backtester.py — Trade resolution (simplified)
+if direction == 1:  # Long
+    sl = entry - current_atr * SL_ATR_MULT   # 1.0 × ATR below
+    tp = entry + current_atr * TP_ATR_MULT   # 3.0 × ATR above
+    for step in range(len(future)):
+        if future_high[step] >= tp:
+            raw_pnl = tp - entry; break
+        if future_low[step] <= sl:
+            raw_pnl = sl - entry; break
+    # Convert to R-multiples and deduct transaction cost
+    net_r = (raw_pnl / current_atr) - (spread_points / current_atr)
+```
+
+Trade results are expressed in R-multiples (profit normalised by the ATR-based stop distance), enabling comparison across varying volatility regimes. A daily circuit breaker halts trading after -4R cumulative loss, and an ATR floor filter (minimum 15 points) prevents trading in low-volatility conditions.
+
+## 4.1.9 Live Forward Testing (Stage 7)
+
+The live system connects to the MetaTrader 5 terminal via the `MetaTrader5` Python API, polling for new 10-minute candles during the New York Open session. When a new candle forms, the system computes features over the trailing 24-bar window, runs both models via GPU forward pass, and transmits trade orders with millisecond-latency execution. Each trade is logged with full indicator snapshots for post-hoc verification:
+
+```python
+# run_live_forward.py — Core polling loop (simplified)
+rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M10, 1, count)
+df = pd.DataFrame(rates)
+
+# Build features over trailing window
+features = build_features(df)
+X = features[-WINDOW:].values  # Last 24 bars
+
+# Predict with both models
+with torch.no_grad():
+    logits = model(torch.tensor(X).unsqueeze(0).float())
+    probs = torch.softmax(logits, dim=1)
+```
+
+Position sizing follows fixed fractional risk: each trade risks exactly 0.5% of current account equity, with the lot size calculated as $\text{lot} = (\text{equity} \times 0.005) / (\text{ATR} \times \text{point\_value})$.
 
 ---
 
-## Key Results
+# 4.2 Experimental Results
 
-### Gross Profits (Without Transaction Costs)
-| Model | Profit | Trades | Win Rate | Sharpe | Max DD | Realistic Return* |
-|-------|--------|--------|----------|--------|--------|-------------------|
-| **LSTM** | +145.0 units | 368 | 46.5% | 1.036 | -21.5% | ~14-22% |
-| **Transformer** | +2.0 units | 25 | 36.0% | 0.059 | -11.4% | ~0.2% |
+This section presents the experimental results obtained from the implementation described in Section 4.1. Results are organised chronologically: hyperparameter selection, out-of-sample backtesting, live forward testing, and cross-environment comparison.
 
-**Note*:** Returns calculated with fixed position sizing. "Equity %" figures in raw backtest outputs use 1% risk compounding (unrealistic for intraday strategies).
+## 4.2.1 Model Selection via Hyperparameter Sweep
 
-### Net Profits (With 0.2 Unit Spread - Default in Backtester)
-| Model | Net Profit | Win Rate | Sharpe | Max DD | Realistic Return* | Status |
-|-------|-----------|----------|--------|--------|-------------------|--------|
-| **LSTM** | **+71.4 units** | 46.5% | 0.522 | -30.2% | **~7-11%** | ✅ Profitable |
-| **Transformer** | -3.0 units | 36.0% | -0.088 | -13.5% | ~-0.3% | ❌ Slight loss |
+A systematic grid search was conducted on the validation subset to identify the optimal configuration for each architectural paradigm. The Transformer search space varied encoder layers (1–3), attention heads (4–8), and embedding dimensions (64–128), yielding 12 configurations. The LSTM search space varied recurrent layers (1–3) and hidden units (32–128), yielding 9 configurations. The configuration maximising the validation Sharpe Ratio was selected as the representative prototype for each paradigm.
 
-**Realistic Return Calculation*:** Assumes fixed position sizing with 1 unit ≈ $10-15 profit on $10,000 account. The 196% "1% risk compounding" figure shown in some backtest outputs is **theoretical only** and unrealistic for 5-minute intraday trading due to liquidity constraints, market impact, and scaling limits.
+*Table 1: Hyperparameter Sweep Results — Top Configurations.*
 
----
+| Model Type | Layers | Heads/Units | d_model | Total R | Trades | Win % | Sharpe | Realistic Return % |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| Transformer (Winner) | 3 | 8 heads | 64 | 54.08 | 187 | 48.1% | 0.820 | 27.0% – 40.6% |
+| Transformer | 1 | 8 heads | 128 | 45.22 | 178 | 46.6% | 0.713 | 22.6% – 33.9% |
+| Transformer | 1 | 4 heads | 128 | 43.06 | 176 | 46.6% | 0.679 | 21.5% – 32.3% |
+| Transformer | 1 | 4 heads | 64 | 41.77 | 188 | 48.4% | 0.655 | 20.9% – 31.3% |
+| LSTM | 1 | 128 units | — | 34.36 | 174 | 45.4% | 0.554 | 17.2% – 25.8% |
+| LSTM | 2 | 128 units | — | 28.80 | 190 | 44.2% | 0.459 | 14.4% – 21.6% |
+| LSTM | 3 | 64 units | — | 26.10 | 166 | 41.6% | 0.437 | 13.1% – 19.6% |
 
-## Main Findings
+In Table 1, we present the top-performing configurations from the hyperparameter sweep, ranked by validation Sharpe Ratio. Several observations are noteworthy. First, the Transformer consistently outperforms the LSTM across all comparable configurations, with the winning Transformer (L3/H8/D64) achieving a Sharpe of 0.820 versus 0.554 for the winning LSTM (L1/U128), representing a 48% improvement. Second, deeper Transformer architectures (3 layers) outperform shallow ones (1 layer), consistent with findings by Vaswani et al. (2017) that deeper stacks capture longer-range dependencies. Third, the LSTM benefits from wider hidden states (128 units) but not from additional layers, suggesting that recurrent depth provides diminishing returns in this high-noise regime. The "Realistic Return" column assumes 0.5%–0.75% of account equity risked per trade, consistent with the fixed fractional position sizing described in the Methodology.
 
-### 1. LSTM Demonstrates Superior Cost Robustness
-Under identical transaction-cost-aware training (cost=1.5), LSTM maintained profitability (+71.4 units) with realistic spreads, while Transformer became slightly unprofitable (-3.0 units).
+## 4.2.2 Out-of-Sample Backtest Evaluation
 
-**Trade frequency response to costs:**
-- **LSTM**: 368 trades → balanced activity, maintains statistical significance
-- **Transformer**: 25 trades → extreme selectivity, insufficient volume
+Following model selection, the winning configurations were evaluated on the strict 180-day out-of-sample holdout window (August 29, 2025 through February 23, 2026). A fixed transaction cost of 2.0 index points per round-trip was applied, consistent with realistic NAS100 execution friction during the New York Open session.
 
-### 2. Architectural Differences in Cost Sensitivity
-**LSTM** found an optimal trade-off between:
-- Trade frequency (368 trades over 6 months)
-- Win rate (46.5% > 33.3% break-even)
-- Transaction cost management
-- **Prediction stability: confidence_std = 0.089** (lower = more consistent)
+*Table 2: Out-of-Sample Backtest Performance Metrics (August 2025 – February 2026).*
 
-**Transformer** became overly risk-averse:
-- Ultra-selective (25 trades total)
-- Win rate below target (36% vs 40% needed for profitability)
-- High max drawdown relative to few trades (-13.5% from only 25 trades)
-- **Less stable predictions: confidence_std = 0.107** (20% higher variance)
+| Metric | Transformer | BiLSTM |
+| :--- | :--- | :--- |
+| Total R-multiples | +46.10 | +26.10 |
+| Trades (n) | 161 | 152 |
+| Win Rate | 47.8% | 44.1% |
+| Sharpe Ratio (95% CI) | **0.813** [0.30 – 1.38] | **0.492** [-0.04 – 1.00] |
+| Profit Factor (95% CI) | 1.65 [1.27 – 2.67] | 1.36 [1.03 – 2.17] |
+| Max Drawdown (%) | -2.63% | -4.29% |
+| CVaR 95% | -1.00 R | -1.02 R |
+| Realistic Return (0.5% Risk) | +23.1% | +13.1% |
+| Realistic Return (0.75% Risk) | +34.6% | +19.6% |
 
-### 3. Stability Paradox: Drawdown vs Prediction Consistency
-**Important Finding**: While Transformer shows lower equity drawdown (-13.5% vs -30.2%), it exhibits **less stable predictions** as measured by confidence standard deviation.
+In Table 2, we present the formal out-of-sample results on the 180-day holdout window that neither model has seen during training or hyperparameter selection. The 95% confidence intervals for Sharpe Ratio and Profit Factor are derived via bootstrap resampling (n=1,000 iterations), confirming that while the Transformer's edge is statistically stronger (lower bound roughly 0.30 Sharpe), both models exhibit high variance inherent to financial returns. While the confidence intervals overlap, the Transformer's distribution is clearly shifted toward higher values. The Transformer achieves a Sharpe ratio of 0.813, exhibiting negligible decay from its validation benchmark of 0.820. The BiLSTM exhibits a more pronounced decay from 0.554 to 0.492, though it remains consistently profitable.
 
-- **LSTM confidence_std**: 0.089 → More consistent prediction confidence
-- **Transformer confidence_std**: 0.107 → More variable, less stable predictions
+### 4.2.2.1 Critical Assessment of Backtest Reality
 
-This suggests Transformer's lower drawdown is primarily due to **under-trading** (25 trades) rather than superior prediction stability. LSTM's predictions are more consistent despite higher trade frequency.
+While the out-of-sample results establish a strong baseline, the backtest remains structurally optimistic. First, performance is highly sensitive to the dynamically tuned decision threshold $\tau$ and the ATR multiplier parameters. Because these were optimised on the validation set, there remains a risk of overfitting to the validation Sharpe — the true optimal parameters in live, forward-moving conditions will inevitably drift. Second, the triple-barrier labelling framework introduces a subtle but pervasive structural advantage offline: because taking profit relies on reaching exact price levels, the backtest assumes perfect, instantaneous liquidity at the barrier. In reality, live execution may suffer partial fills, widened spreads, or latency slippage exactly at these extreme threshold points, masking the true difficulty of capturing the full 3R payoff.
 
-### 3. Stability Analysis
-**LSTM:**
-- Consistent performance across backtest period
-- Max drawdown: 30.2% (realistic equity curve)
-- Sharpe ratio: 0.522 (moderate risk-adjusted returns)
-- Profit factor: 1.30 (after costs)
-- **Daily accuracy std: 0.192** (prediction consistency)
-- **Confidence std: 0.089** (lower = more stable predictions)
+Both architectures demonstrate maximum drawdowns well within acceptable bounds. The Transformer's peak-to-trough decline of -2.63% is notably conservative, indicating that its higher Sharpe is achieved without proportionally increased risk. The CVaR 95% values near -1.0 R for both models confirm that the worst 5% of trade outcomes are, on average, equivalent to exactly one stop-loss hit — validating that the triple-barrier framework and ATR-based position sizing successfully prevent catastrophic tail losses.
 
-**Transformer:**
-- More stable drawdown profile (-13.5%)
-- But insufficient trading activity for reliable statistics
-- Sharpe ratio: -0.088 (negative risk-adjusted returns after costs)
-- Profit factor: 0.84 (losses after costs)
-- **Daily accuracy std: 0.200** (slightly higher variance)
-- **Confidence std: 0.107** (20% higher = LESS stable predictions)
+### Equity Curves
 
-**Stability Finding**: Despite Transformer's lower drawdown, LSTM demonstrates **more stable predictions** (lower confidence std: 0.089 vs 0.107). This indicates LSTM's predictions are more consistent, even though it trades more frequently.
+![Figure 1: Backtest Equity Curve — Transformer vs BiLSTM.](plots/backtest_equity_curve.png)
+*Figure 1: Cumulative equity curves for both architectures over the 180-day out-of-sample holdout period (September 2025 – January 2026). The Transformer (blue) demonstrates a steeper equity trajectory with fewer prolonged flat periods compared to the BiLSTM (orange).*
 
-### 4. Short-Horizon Limitation for Transformers
-The 2-hour opening session (24 bars) may be too short for Transformer's self-attention mechanism to provide significant advantage over LSTM's sequential processing. LSTMs appear better suited for capturing short-term momentum patterns in high-volatility regimes.
+In Figure 1, the Transformer's equity trajectory rises more steeply and with greater consistency than the BiLSTM's. Notably, the BiLSTM exhibits a prolonged flat period between approximately October and November 2025, during which the Transformer continues to accumulate positive returns. This suggests that the self-attention mechanism may be more effective at identifying profitable patterns during transitional market regimes.
 
----
+### Drawdown Analysis
 
-## Realistic Return Expectations
+![Figure 2: Backtest Drawdown Curve — Transformer vs BiLSTM.](plots/backtest_drawdown_curve.png)
+*Figure 2: Drawdown profiles for both architectures. The Transformer exhibits a shallower maximum drawdown (-2.63%) compared to the BiLSTM (-4.29%).*
 
-### Understanding "Units" vs Real Money
+In Figure 2, the drawdown profiles reveal a meaningful difference in capital preservation behaviour. The BiLSTM experiences a sustained drawdown period reaching -4.29% near the end of the evaluation window, whereas the Transformer's deepest drawdown of -2.63% is both shallower and shorter in duration. This difference is particularly significant given that the Transformer simultaneously achieves higher absolute returns.
 
-The backtest reports profits in **"units"** where 1 unit = 1×ATR (Stop Loss or Take Profit distance). To convert to realistic dollar returns:
+### Return Distributions
 
-**Assumptions:**
-- Trading NAS100 mini contracts
-- 1 unit ≈ $10-15 profit per contract
-- $10,000 starting account
-- **Fixed position sizing** (1 contract per trade, no compounding)
+![Figure 3: Backtest Return Distribution — Transformer.](plots/returns_hist_transformer_backtest.png)
+*Figure 3: Distribution of per-trade R-multiples for the Transformer. The right-skewed tail reflects the 3:1 take-profit-to-stop-loss ratio inherent in the triple-barrier labelling.*
 
-**LSTM Performance (6 months):**
-- Net profit: 71.4 units
-- In dollars: $714 - $1,071
-- **Return on account: ~7-11%**
-- Monthly average: ~1.2-1.8%
+![Figure 4: Backtest Return Distribution — BiLSTM.](plots/returns_hist_bilstm_backtest.png)
+*Figure 4: Distribution of per-trade R-multiples for the BiLSTM. The distribution exhibits similar asymmetry but with a slightly higher concentration of trades near the -1R stop-loss boundary.*
 
-**Why NOT 196%?**
+In Figures 3 and 4, the return distributions for both models display the characteristic asymmetry expected from the 3:1 reward-to-risk barrier structure. Winning trades cluster near +3R (the take-profit boundary) while losing trades cluster near -1R (the stop-loss). The Transformer distribution shows a slightly higher density in the +3R region relative to the -1R region, consistent with its higher profit factor of 1.65 versus 1.36.
 
-The backtester also shows "Final equity: 196%" using "1% risk per trade" compounding. This is **theoretically calculated** but **practically impossible** for this strategy because:
+### Rolling Sharpe Ratio
 
-1. **Liquidity constraints**: 5-minute NAS100 bars have finite depth
-2. **Market impact**: Larger positions would move prices against you
-3. **Slippage scales**: Bigger orders = worse fills during volatile opens
-4. **Position sizing limits**: Can't infinitely scale intraday strategies
+![Figure 5: Rolling Sharpe Ratio — Transformer vs BiLSTM.](plots/backtest_rolling_sharpe.png)
+*Figure 5: 30-trade rolling Sharpe ratio for both architectures over the evaluation window.*
 
-This 196% represents **maximum theoretical compounding** if you could perfectly scale with zero slippage. For academic honesty, we present the **realistic fixed-sizing returns (~7-11%)** instead.
+In Figure 5, the rolling Sharpe ratio provides a view of how risk-adjusted performance evolves over time. The Transformer maintains a more consistently positive rolling Sharpe throughout the evaluation window, whereas the BiLSTM's rolling Sharpe dips below zero during mid-evaluation — corresponding to the flat/declining equity period visible in Figure 1. Both models recover positive rolling Sharpe by the end of the window.
 
-### Industry Context: What is "Good"?
+### Statistical Significance (Monte Carlo Permutation)
 
-According to professional quant trading standards for ML intraday systems:
+To assess whether the observed performance is statistically distinguishable from random trading, 1,000 random permutations of each model's return sequence were generated.
 
-| 6-Month Return | Assessment |
-|----------------|------------|
-| **-10% to 0%** | Common early phase |
-| **0% to +10%** | Promising, real edge likely |
-| **+10% to +20%** | Excellent intraday ML performance |
-| **+20% to +35%** | Rare, check for hidden risk |
-| **35%+** | Usually leverage, luck, or overfitting |
+![Figure 6: Monte Carlo Sharpe Distribution — Transformer.](plots/backtest_monte_carlo_sharpe_transformer.png)
+*Figure 6: Monte Carlo null distribution of Sharpe Ratio for the Transformer. The observed Sharpe (0.813) falls significantly above the null mean.*
 
-**LSTM's ~7-11% return falls squarely in the "promising to excellent" range** for a 5-minute opening session strategy. This is:
-- ✅ Sustainable
-- ✅ Risk-controlled (Sharpe 0.522)
-- ✅ Consistent across 368 trades
-- ✅ Realistic for production deployment
+![Figure 7: Monte Carlo Sharpe Distribution — BiLSTM.](plots/backtest_monte_carlo_sharpe_bilstm.png)
+*Figure 7: Monte Carlo null distribution of Sharpe Ratio for the BiLSTM. The observed Sharpe (0.492) also exceeds the null distribution.*
 
-A system that can reliably produce 15-20% annually with controlled risk is **institutional-grade**.
+In Figures 6 and 7, the observed Sharpe ratios (marked by vertical lines) fall in the extreme right tail of their respective null distributions. The Transformer's 0.813 Sharpe is separated from the null mean by multiple standard deviations, confirming that its performance is statistically distinguishable from random trading at the 95% confidence level. The BiLSTM's 0.492 Sharpe also exceeds the null distribution, though with a smaller margin, reflecting its lower absolute performance.
 
-## Practical Implications
+## 4.2.3 Classification Performance
 
-### For Live Trading
-**LSTM** is the recommended architecture for this use case:
-- Maintains profitability with realistic costs
-- Sufficient trade frequency for statistical confidence
-- More robust to transaction cost pressure
-- Suitable for retail trading conditions
+While the primary evaluation metric for this study is financial performance (Sharpe Ratio, Profit Factor), classification metrics provide additional diagnostic insight into how each architecture distributes its predictions across the three output classes.
 
-**Transformer** requires further optimization:
-- Consider lower cost penalty during training (e.g., 1.0 vs 1.5)
-- May need longer time horizons to leverage self-attention benefits
-- Current extreme selectivity leads to insufficient sample size
+*Table 3: Per-Class Classification Metrics on the Out-of-Sample Backtest Set.*
 
-### Transaction Cost Impact
-Transaction costs reduced LSTM gross profits by **~51%** (145 → 71.4 units), highlighting the critical importance of:
-1. Cost-aware training objectives
-2. Realistic backtest assumptions
-3. Trade frequency optimization
+| Class | Metric | Transformer | BiLSTM |
+| :--- | :--- | :--- | :--- |
+| **Hold** | Precision | 0.502 | 0.584 |
+| | Recall | 0.552 | 0.213 |
+| | F1-Score | 0.526 | 0.312 |
+| **Long** | Precision | 0.414 | 0.409 |
+| | Recall | 0.458 | 0.570 |
+| | F1-Score | 0.435 | 0.476 |
+| **Short** | Precision | 0.435 | 0.321 |
+| | Recall | 0.268 | 0.631 |
+| | F1-Score | 0.332 | 0.425 |
+| **Overall** | Accuracy | 0.465 | 0.405 |
+| | Macro F1 | 0.431 | 0.405 |
 
----
+In Table 3, several instructive patterns emerge. The Transformer achieves higher overall accuracy (46.5% vs 40.5%) and is more conservative in its trade predictions — it classifies 753 of 1,374 samples as Hold compared to only 250 for the BiLSTM. This selectivity is consistent with its higher backtest Sharpe: by abstaining from marginal opportunities, it concentrates its trades on higher-conviction signals. Conversely, the BiLSTM predicts trades far more aggressively (1,124 trade signals vs 621 for the Transformer), achieving notably higher recall for both Long (0.570) and Short (0.631) classes at the cost of lower precision.
 
-## Limitations
+Crucially, these classification accuracies — both below 50% — might appear poor in a standard machine learning context. However, under the 3:1 reward-to-risk framework, a model needs only ~25% directional accuracy to break even. The combination of 47.8% win rate with 3:1 payoff asymmetry is what produces the Transformer's 0.813 Sharpe, demonstrating that classification accuracy alone is an insufficient proxy for trading system profitability.
 
-1. **Single regime**: Training and backtest period both in recent bull market regime (2019-2026)
-2. **Short time horizon**: 2-hour opening session may favor LSTM over Transformer
-3. **No live validation**: Results are backtest-only (forward testing recommended)
-4. **Data gap**: 20-day gap between Kaggle and MT5 data (2024-08-09 to 2024-08-29)
-5. **Spread estimate**: 0.2 units is conservative; actual spreads vary by broker and liquidity
-6. **⚠️ Compounded equity figures unrealistic**: The "196%" and "408%" equity figures shown in raw backtester output assume 1% risk compounding (infinite scaling), which is impractical for 5-minute intraday strategies. **Realistic returns with fixed sizing: 7-11%** over 6 months. See [REALISTIC_EXPECTATIONS.md](REALISTIC_EXPECTATIONS.md) for detailed explanation.
+## 4.2.4 Live Forward Testing (MT5 Execution)
 
----
+Both architectures were deployed in parallel to a dedicated VPS connected to IC Markets (EU) demo accounts starting February 24, 2026. Each system was allocated $10,000 USD initial capital with 0.5% risk per trade.
 
-## Recommendations for Future Work
+It is critical to explicitly acknowledge that this 35-day live period yielded an extremely small sample size (31 trades for the Transformer and 19 for the BiLSTM). These results are therefore statistically underpowered and insufficient for formal inference. Rather than definitive conclusions, these live outcomes provide directional insights into how the models behave when transitioning from simulated to actual market environments under a major volatility regime shift.
 
-1. **Transformer optimization**: Test with lower cost penalties and longer sequences
-2. **Multi-regime testing**: Include bear markets, high VIX periods, different volatility regimes
-3. **Live forward testing**: Deploy on demo account for 1-3 months validation
-4. **Ensemble approach**: Combine LSTM + Transformer predictions (may improve robustness)
-5. **Alternative architectures**: Test attention-augmented LSTMs, temporal convolutional networks
-6. **Feature ablation**: Identify which feature groups contribute most to profitability
+*Table 4: Live Forward Testing Performance Metrics (March 2026).*
 
----
+| Metric | Transformer | BiLSTM |
+| :--- | :--- | :--- |
+| Total R-multiples | +3.32 | +4.68 |
+| Trades (n) | 31 | 19 |
+| Win Rate | 48.4% | 63.2% |
+| Profit Factor | 1.59 | 3.50 |
+| Actual PnL (%) | -1.07% | +0.10% |
 
-## Conclusion
+In Table 4, which follows the same metric-per-row format as Table 2 for direct comparability, the live results reveal a striking reversal from the backtested rankings. The BiLSTM, which ranked second in backtesting (0.492 vs 0.813 Sharpe), demonstrates notably superior live performance: a 63.2% win rate with a profit factor of 3.50, compared to the Transformer's 48.4% win rate and 1.59 profit factor.
 
-This research demonstrates that **LSTM architectures exhibit superior robustness** compared to Transformers when trading short-horizon high-volatility sessions with realistic transaction costs. Under identical training conditions with cost awareness, LSTM maintained profitability (+71.4 units, 196% equity) while Transformer became marginally unprofitable (-3.0 units).
+Sharpe ratios and maximum drawdown percentages are intentionally omitted from this table. With fewer than 30 observations for the BiLSTM, these statistics are unreliable and highly sensitive to individual trade outcomes. Profit Factor and Win Rate are more robust metrics at this sample size.
 
-The key differentiators are:
+The Transformer's higher trade frequency (31 vs 19 trades) exposes it to proportionally greater execution friction. Although it generated more R-units in absolute terms (+3.32 R from 31 trades vs +4.68 from 19 trades for the BiLSTM), the increased friction from more frequent position entry and exit resulted in a net account loss of -1.07% after broker costs.
 
-1. **Cost-driven trade selectivity**: LSTM found a profitable balance (368 trades, 46.5% win rate), while Transformer became overly conservative (25 trades, 36% win rate), resulting in insufficient volume for statistical significance.
+### Live Equity Curves
 
-2. **Prediction stability**: Despite lower equity drawdown, Transformer shows **20% higher prediction variance** (confidence_std: 0.107 vs 0.089), indicating LSTM produces more consistent predictions even with higher trade frequency.
+![Figure 8: Live Equity Curve — Transformer vs BiLSTM.](plots/live_equity_curve.png)
+*Figure 8: Cumulative equity curves from actual MT5 broker executions during March 2026.*
 
-3. **Architectural suitability**: Short-horizon sessions (2 hours, 24 bars) favor LSTM's sequential momentum capture over Transformer's attention mechanisms.
+In Figure 8, the BiLSTM maintains a more consistently positive trajectory despite fewer trades. Both models benefit from two large winning trades in early March (corresponding to a strong directional move on March 9–10), but diverge subsequently as the Transformer's more frequent trading generates alternating wins and losses that erode its early gains.
 
-For practitioners, this suggests that **architectural choice significantly impacts both cost sensitivity and prediction consistency** in algorithmic trading systems. Simpler sequential models (LSTM) may outperform complex attention mechanisms (Transformer) in short-horizon, cost-constrained, high-volatility environments.
+### Live Drawdown Profiles
 
-**Thesis Contribution**: This work demonstrates that "stability" in trading AI should be measured not just by drawdown, but by prediction consistency (confidence variance) and trade frequency adequacy for statistical confidence.
+![Figure 9: Live Drawdown Curve — Transformer vs BiLSTM.](plots/live_drawdown_curve.png)
+*Figure 9: Drawdown profiles from live execution. Both architectures exhibit drawdown periods during the volatile March 2026 regime.*
 
----
+### MT5 Actual Execution Traces
 
-**Repository**: See `README.md` for full reproduction instructions and `PROJECT_STRUCTURE.md` for codebase documentation.
+![Figure 10: Actual MT5 Cumulative PnL — Transformer.](plots/mt5_actual_transformer.png)
+*Figure 10: Actual MT5 cumulative net PnL for the Transformer, tracking official broker execution records.*
+
+![Figure 11: Actual MT5 Cumulative PnL — BiLSTM.](plots/mt5_actual_bilstm.png)
+*Figure 11: Actual MT5 cumulative net PnL for the BiLSTM, tracking official broker execution records.*
+
+In Figures 10 and 11, the actual broker execution traces show the trade-by-trade account evolution as recorded by the MetaTrader 5 terminal. These plots confirm that the BiLSTM maintained positive cumulative equity throughout the live period, finishing with a marginal gain, while the Transformer's account peaked early and subsequently declined below its starting capital.
+
+### Sequential Trade Analysis
+
+![Figure 12: Sequential Cumulative PnL — Live Comparison.](plots/live_trade_sequence_pnl.png)
+*Figure 12: Trade-by-trade sequential cumulative PnL comparison between architectures in live conditions.*
+
+In Figure 12, the trade-by-trade sequential comparison illustrates the divergence point between the two architectures. Both models track closely for the first 10 trades, after which the BiLSTM establishes a consistent lead. The Transformer's more aggressive trading frequency generates a higher variance trajectory, with multiple consecutive losses in the mid-March period that the BiLSTM avoids by simply not trading.
+
+### Live Return Distributions
+
+![Figure 13: Live Return Distribution — Transformer.](plots/returns_hist_transformer_live.png)
+*Figure 13: Distribution of per-trade R-multiples for the Transformer during live forward testing (March 2026).*
+
+![Figure 14: Live Return Distribution — BiLSTM.](plots/returns_hist_bilstm_live.png)
+*Figure 14: Distribution of per-trade R-multiples for the BiLSTM during live forward testing (March 2026).*
+
+In Figures 13 and 14, the live return distributions reveal a striking contrast with the backtest distributions in Figures 3 and 4. Most notably, the characteristic +3R cluster visible in the backtest distributions is entirely absent from the live distributions. This confirms the take-profit barrier failure discussed in Section 4.2.9: during the extreme volatility regime of March 2026, the ATR-scaled take-profit target expanded beyond the range achievable within a single 2-hour session, causing all profitable exits to occur via the session-close auto-exit mechanism instead. The resulting distributions are more symmetrically centred around zero, with winning trades producing smaller, variable gains rather than the clean +3R payoffs observed during backtesting.
+
+## 4.2.5 Regime Sensitivity Analysis
+
+To evaluate the relationship between market volatility and model performance, trade outcomes were plotted against the normalised ATR at the time of entry.
+
+![Figure 15: Volatility vs. Performance — Transformer.](plots/volatility_overlay_transformer.png)
+*Figure 15: Volatility (ATR %) vs. trade return for the Transformer.*
+
+![Figure 16: Volatility vs. Performance — BiLSTM.](plots/volatility_overlay_bilstm.png)
+*Figure 16: Volatility (ATR %) vs. trade return for the BiLSTM.*
+
+In Figures 15 and 16, the scatter plots with fitted trendlines suggest a positive correlation between normalised volatility and model return for both architectures. This provides preliminary evidence consistent with the hypothesis that these models capture predictive signal specifically from elevated volatility regimes — the ATR-filtered environment they were designed to exploit. The relationship appears slightly stronger for the Transformer, which is consistent with its higher overall Sharpe: the self-attention mechanism may be better equipped to recognise structural patterns within high-volatility candles.
+
+## 4.2.6 Execution Fidelity Analysis
+
+To quantify the impact of real-world market friction, we compare the theoretical signals (backtest engine replay of the March 2026 period) against actual MT5 broker outcomes.
+
+*Table 5: Theoretical vs. Actual Execution Gap (March 2026).*
+
+| Metric | Transformer | BiLSTM |
+| :--- | :--- | :--- |
+| Theoretical PnL (%) | +3.11% | +4.18% |
+| Actual MT5 PnL (%) | -1.07% | +0.10% |
+| **Execution Gap** | **-4.18%** | **-4.08%** |
+
+In Table 5, both architectures exhibit a consistent execution gap of approximately 4%. This degradation is attributable to the difference between the idealised transaction cost model used in backtesting (fixed 2.0 points) and the variable real-world execution dynamics: widened spreads during volatile opens, partial fills, and order queue positioning. The consistency of the gap across both models (~4%) suggests it is predominantly driven by systematic market friction rather than architecture-specific factors. However, the Transformer's higher trade count (31 vs 19) amplifies the absolute impact of per-trade friction.
+
+![Figure 17: Execution Fidelity — Transformer.](plots/execution_fidelity_transformer.png)
+*Figure 17: Execution fidelity analysis for the Transformer — theoretical signals (blue) vs. actual MT5 execution (red).*
+
+![Figure 18: Execution Fidelity — BiLSTM.](plots/execution_fidelity_bilstm.png)
+*Figure 18: Execution fidelity analysis for the BiLSTM — theoretical signals (blue) vs. actual MT5 execution (red).*
+
+In Figures 17 and 18, the divergence between theoretical (blue) and actual (red) equity trajectories is clearly visible. For both models, the theoretical and actual curves track closely for the first few trades before gradually separating. The BiLSTM's smaller trade count results in fewer friction events, enabling it to maintain positive territory despite the systematic execution gap.
+
+## 4.2.7 Backtest vs. Live Comparison
+
+The following overlay plots directly compare the backtest equity and drawdown profiles with the live forward test trajectories.
+
+![Figure 19: Equity Comparison — Transformer (Backtest vs. Live).](plots/comparison_transformer.png)
+*Figure 19: Transformer cumulative equity — backtest simulation (blue) overlaid with live MT5 execution (red).*
+
+![Figure 20: Equity Comparison — BiLSTM (Backtest vs. Live).](plots/comparison_bilstm.png)
+*Figure 20: BiLSTM cumulative equity — backtest simulation (blue) overlaid with live MT5 execution (red).*
+
+In Figures 19 and 20, the overlay visualisations illustrate the performance continuity across the backtest-to-live transition. The backtest equity curves (blue) demonstrate sustained growth across the August 2025 – February 2026 window, while the live segments (red) cover the shorter March 2026 forward testing period. The transition point (February 24, 2026) is visible as the junction between the two curves. The BiLSTM shows smoother continuity at this transition, while the Transformer's live trajectory diverges more sharply from its backtest trend.
+
+![Figure 21: Drawdown Comparison — Transformer.](plots/drawdown_comparison_transformer.png)
+*Figure 21: Transformer drawdown comparison — backtest (blue) vs. live (red).*
+
+![Figure 22: Drawdown Comparison — BiLSTM.](plots/drawdown_comparison_bilstm.png)
+*Figure 22: BiLSTM drawdown comparison — backtest (blue) vs. live (red).*
+
+In Figures 21 and 22, the drawdown comparison shows that live-period drawdowns remain generally bounded within the same envelope established during backtesting, suggesting no fundamental regime breakdown. The live drawdowns tend to be noisier due to the smaller sample size.
+
+## 4.2.8 Summary of Findings
+
+The experimental results support the following conclusions:
+
+1. **Theoretical Superiority of the Transformer**: Under controlled backtesting conditions with a 2.0-point transaction cost, the Transformer achieves a Sharpe ratio of 0.813 compared to 0.492 for the BiLSTM, representing a 65% improvement in risk-adjusted performance. This advantage is consistent across both the validation sweep (0.820 vs. 0.554) and the out-of-sample evaluation, demonstrating robust generalisation.
+
+2. **Practical Resilience of the BiLSTM**: In live forward testing under real market microstructure conditions, the BiLSTM outperforms the Transformer with a profit factor of 3.50 vs. 1.59 and a win rate of 63.2% vs. 48.4%. The BiLSTM's lower trade frequency (19 vs. 31 trades) reduces exposure to execution friction, enabling it to maintain positive net profitability (+0.10%) where the Transformer incurs a loss (-1.07%).
+
+3. **Execution Gap Consistency**: Both architectures exhibit a ~4% execution gap between theoretical and actual performance, suggesting that the gap is predominantly attributable to systematic market friction rather than architecture-specific factors. The Transformer's higher trade count amplifies the absolute impact of this friction.
+
+4. **Regime Stability**: Both models demonstrate maximum drawdowns well within acceptable bounds (-2.63% Transformer, -4.29% BiLSTM), and CVaR 95% values near -1.0 R confirm that the triple-barrier framework effectively contains tail risk. Monte Carlo permutation testing confirms that observed Sharpe ratios are statistically distinguishable from random trading at the 95% confidence level.
+
+5. **A Mismatch Between Offline Optimisation Metrics and Real-World Execution Robustness**: The results reveal a foundational thesis-level insight: the Transformer, which overwhelmingly wins offline optimization metrics (0.813 vs 0.492 Sharpe) through superior pattern recognition, is structurally more fragile to real-world execution in extreme regimes. The BiLSTM’s apparent underperformance in the backtest — effectively missing many marginal trades — actually confers practical resilience in non-stationary live trading, turning lower offline efficiency into superior real-world robustness where execution timing and regime adaptation are critical constraints. These findings suggest that models optimised purely for offline risk-adjusted performance may be systematically biased toward higher trading frequency, which can be detrimental under real execution constraints.
+
+## 4.2.9 Discussion: Volatility Regime Shift and Live Performance Degradation
+
+While the backtest-to-live performance gap (~4%) is partly attributable to execution friction as discussed in Section 4.2.5, a deeper structural explanation lies in the fundamental mismatch between the volatility regime represented in the training data and the regime encountered during live deployment. It is important to note that the live forward test, comprising only 31 and 19 trades respectively, does not constitute a statistically significant sample. The observations below are therefore offered as preliminary hypotheses rather than conclusive findings, and would require a substantially longer live testing horizon to validate.
+
+### Training Data Volatility Composition
+
+The training dataset spans August 2019 through August 2025, a period during which the Nasdaq-100 Volatility Index (VXN) spent the majority of its time in low-to-moderate volatility regimes. With the exception of the COVID-19 crash in March 2020 and brief spikes during the 2022 inflation cycle, the index traded within historically normal volatility bands for approximately 90% of the training window. Consequently, the models' learned representations are predominantly calibrated to these low-volatility patterns — mean-reverting price behaviour, reliable trend continuation, and predictable ATR scaling.
+
+The live forward testing period (March 2026), however, coincided with an exceptionally elevated volatility regime. Geopolitical uncertainty and aggressive tariff policy announcements drove the VXN to sustained levels well above the training distribution. This represents a regime shift that fundamentally alters the statistical properties of the price dynamics the models were trained to predict.
+
+### Take-Profit Barrier Failure
+
+The most revealing diagnostic of this regime mismatch is the behaviour of the take-profit barrier during live trading. In the backtesting window (August 2025 – February 2026), the 3:1 ATR take-profit barrier was frequently reached, producing the characteristic right-skewed return distribution visible in Figures 3 and 4. During the live period, however, not a single winning trade was closed by hitting the take-profit barrier. Instead, all profitable trades resulted from the session-close auto-exit — the fallback mechanism that closes open positions when the 2-hour New York Open window ends.
+
+This failure pattern has a clear mechanical explanation. In an extremely volatile regime, the ATR expands substantially, pushing the take-profit target further from the entry price. While a 3.0 × ATR target might be 150–200 points away in normal conditions, in March 2026 this barrier could exceed 400–500 points — a distance that is unlikely to be traversed within a single 2-hour session. Meanwhile, the expanded ATR also widens the stop-loss, but the erratic price behaviour in extreme volatility generates whipsaws that trigger stop-losses more frequently. The net effect is that the 3:1 reward-to-risk framework, which performed reliably under normal volatility, becomes structurally disadvantaged in extreme regimes.
+
+### Why the BiLSTM Degraded More Gracefully
+
+Despite operating under the same adverse conditions, the BiLSTM maintained positive cumulative equity while the Transformer incurred a net loss. This divergence can be attributed to the BiLSTM's more conservative trading behaviour: it executed only 19 trades during the live period compared to the Transformer's 31. In a regime where the underlying signal-to-noise ratio has deteriorated, trading less frequently is inherently advantageous — each trade carries a substantially higher probability of being a false signal. The BiLSTM's higher decision threshold (0.40 vs. 0.35 for the Transformer) acted as an implicit filter, reducing exposure to the noise-dominated regime.
+
+Additionally, the nature of false signals changes in extreme volatility. A directional breakout pattern that reliably indicates trend continuation under normal conditions may instead represent a transient volatility spike — a momentary expansion that quickly reverses. The Transformer, with its attention mechanism optimised for pattern matching across the lookback window, may be more susceptible to these misleading structural signals precisely because it excels at recognising them under normal conditions.
+
+### The Upper ATR Filter Dilemma
+
+A natural mitigation strategy would be to introduce an upper ATR filter — complementing the existing minimum ATR threshold of 15 points with a maximum threshold that prevents trading when volatility exceeds a defined ceiling. In principle, such a filter would have excluded the most extreme days of March 2026 and prevented the majority of losing trades. In practice, however, applying a reasonable upper ATR filter to the live period would have eliminated nearly all trading opportunities, resulting in zero or near-zero live trades. This presents a methodological tension: while the filter would improve simulated performance, it would simultaneously eliminate the empirical evidence needed to evaluate live execution behaviour. The decision to trade without an upper filter was therefore made deliberately to ensure that the live forward test produced a meaningful, if imperfect, dataset for analysis.
+
+### Noise Robustness Considerations
+
+As described in the Methodology (Section 3.4), Gaussian noise ($\sigma_{\text{noise}} = 0.01$) was injected into input features during training as a data augmentation technique to quantify model sensitivity to input perturbations. While this noise injection improves generalisation to minor distributional shifts — such as broker-specific pricing differences or rounding artefacts — the March 2026 regime shift represents a fundamentally different challenge: not noise in the input features, but a structural change in the underlying data-generating process itself. The noise robustness mechanism, calibrated to $\sigma = 0.01$, was insufficient to prepare the models for the order-of-magnitude volatility increase observed during the live period. This suggests that future work should explore regime-aware augmentation strategies — for instance, synthetically generating extreme-volatility training samples using historical VXN spike periods — rather than relying on isotropic Gaussian perturbation alone.
+
+### Future Work: State Space Models for Extreme Regime Filtering
+
+The observations above suggest that a key limitation of both architectures is their inability to distinguish between genuine directional signals and noise-driven false breakouts in extreme volatility regimes. Future research could explore State Space Models (SSMs) such as Mamba (Gu and Dao, 2023) or S4 (Gu et al., 2022) as an alternative architectural paradigm. SSMs operate by learning a continuous-time latent state representation that explicitly separates signal dynamics from observation noise through a structured state transition matrix. This inductive bias may confer natural advantages in super-volatile regimes where the primary challenge is not pattern recognition — which both the Transformer and BiLSTM handle well — but rather the filtering of model predictions through a noise-aware lens. Additionally, SSMs achieve linear-time complexity in sequence length, potentially enabling longer lookback windows that capture broader regime context without the quadratic cost of self-attention.

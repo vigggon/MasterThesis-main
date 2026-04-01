@@ -19,14 +19,14 @@ class PositionalEncoding(nn.Module):
 
 
 class TransformerModel(nn.Module):
-    """Transformer encoder: d_model=64, nhead=4, num_layers=2 to match LSTM capacity."""
+    """Transformer encoder: d_model=64, nhead=8, num_layers=3."""
 
     def __init__(
         self,
         input_size: int,
-        d_model: int = 128,
+        d_model: int = 64,
         nhead: int = 8,
-        num_layers: int = 2,
+        num_layers: int = 3,
         dim_feedforward: int = 128,
         dropout: float = 0.1,
         num_classes: int = 2,

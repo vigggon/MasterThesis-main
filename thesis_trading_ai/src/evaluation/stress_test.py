@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
-from evaluation.backtester import load_backtest_data_and_predictions, equity_curve, max_drawdown, sharpe
+from backtesting.backtester import load_backtest_data_and_predictions, equity_curve, max_drawdown, sharpe
 from utils import RESULTS_ROOT, MIN_ATR, DAILY_STOP_R, DAILY_TP_R, BEST_TRANSFORMER_DIR, BEST_LSTM_DIR
 
 def run_monte_carlo(returns, n_sims=1000):

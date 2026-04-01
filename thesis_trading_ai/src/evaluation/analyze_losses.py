@@ -10,7 +10,7 @@ from collections import defaultdict
 import argparse
 
 from utils import PROCESSED_DIR, RESULTS_ROOT
-from evaluation.backtester import load_backtest_data_and_predictions
+from backtesting.backtester import load_backtest_data_and_predictions
 
 def run_loss_analysis(model_name: str = "lstm", spread_points: float = 1.0):
     # Load data

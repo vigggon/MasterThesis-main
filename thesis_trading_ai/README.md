@@ -15,6 +15,7 @@ See **[SETUP.md](SETUP.md)** for:
 ## Key Configuration
 
 **Trading Parameters:**
+
 - **Timeframe**: 10 Minutes (Resampled from 5m)
 - **Stop Loss**: 1.0 × ATR
 - **Take Profit**: 3.0 × ATR (Verified optimal)
@@ -23,20 +24,23 @@ See **[SETUP.md](SETUP.md)** for:
 - **Filter**: Min ATR 15.0 (Inference Only)
 
 **Backtest:**
+
 - **Period**: Aug 2025 – Jan 2026 (180 days, 3,139 samples)
 - **Evaluation**: With realistic 0.2 unit spread cost
 
 ## Results Summary
 
-### Without Transaction Costs (Gross Profits):
+### Without Transaction Costs (Gross Profits)
+
 | Model | Profit | Trades | Win Rate | Sharpe | Final Equity |
-|-------|--------|--------|----------|--------|--------------|
+| :--- | :--- | :--- | :--- | :--- | :--- |
 | **LSTM** | +145.0 units | 368 | 46.5% | 1.036 | 408% |
 | **Transformer** | +2.0 units | 25 | 36.0% | 0.059 | 102% |
 
-### With 1.0 Unit Spread (Standardized Test):
+### With 1.0 Unit Spread (Standardized Test)
+
 | Model | Timeframe | Profit | Sharpe | Max DD | Status |
-|-------|-----------|--------|--------|--------|--------|
+| :--- | :--- | :--- | :--- | :--- | :--- |
 | **Transformer** | **10 min** | **+284.1 R** | **1.69** | **-15.9%** | 🏆 **Champion** |
 | **LSTM** | **10 min** | **+148.8 R** | **1.11** | **-39.0%** | ✅ Profitable |
 
@@ -49,7 +53,7 @@ See **[SETUP.md](SETUP.md)** for:
 ## Data Splits (No Leakage)
 
 | Split | Period | Samples | Use |
-|-------|--------|---------|-----|
+| :--- | :--- | :--- | :--- |
 | **Train** | Aug 2019 – Aug 2025 | 36,473 | Training + validation (recency-weighted) |
 | **Backtest** | Aug 2025 – Jan 2026 | 3,139 | Unseen evaluation with transaction costs |
 | **Forward** | Live only | N/A | Real-time testing via `run_live_forward.py` |
@@ -64,37 +68,58 @@ Activate the venv, then:
 
 1. **Download** — M5 data → `data/raw/nasdaq_m5.csv`  
    Put **Kaggle** `NQ_5Years_8_11_2024.csv` and **MT5 export** `NAS100_*.csv` (from 2024-08-29) in `data/raw/`. Then:
+
    ```bash
    python data_download.py
    ```
-   The script **merges** Kaggle (to 2024-08-09) + MT5 (from 2024-08-29) → `nasdaq_m5.csv`. Use `--no-merge` to use only Kaggle.  
+
+   The script **merges** Kaggle (to 2024-08-09) + MT5 (from 2024-08-29) → `nasdaq_m5.csv`. Use `--no-merge` to use only Kaggle.
+
    Optional: `--from-csv path/to/file.csv` or MT5 live: `--symbol NAS100`, `--list-symbols`, `--diagnose`.
 
-2. **Volatility** — ATR(14), Open vs Rest → `data/volatility_analysis/`  
-   `python volatility_validation.py`
+2. **Volatility** — ATR(14), Open vs Rest → `data/volatility_analysis/`
 
-3. **Session** — 09:30–11:30 NY → `data/session_filtered/nasdaq_open_session.csv`  
-   `python session_filter.py`
+   ```bash
+   python volatility_validation.py
+   ```
 
-4. **Features** — Returns, ATR, RSI, VWAP, volatility regime, overnight gaps, session context → `data/features/open_features.csv`  
-   `python feature_engineering.py`
+3. **Session** — 09:30–11:30 NY → `data/session_filtered/nasdaq_open_session.csv`
 
-5. **Labels** — SL=1×ATR, TP=2.0×ATR (break-even 33.3%), max 12 bars → `data/labeled/open_labeled.csv`  
-   `python label_generator.py`
+   ```bash
+   python session_filter.py
+   ```
 
-6. **Dataset** — Window=24, train/backtest .npz → `data/processed/`  
-   `python dataset_builder.py`
+4. **Features** — Returns, ATR, RSI, VWAP, volatility regime, overnight gaps, session context → `data/features/open_features.csv`
 
-7. **Train** — LSTM and Transformer with transaction cost awareness (cost=1.5 by default)  
+   ```bash
+   python feature_engineering.py
+   ```
+
+5. **Labels** — SL=1×ATR, TP=2.0×ATR (break-even 33.3%), max 12 bars → `data/labeled/open_labeled.csv`
+
+   ```bash
+   python label_generator.py
+   ```
+
+6. **Dataset** — Window=24, train/backtest .npz → `data/processed/`
+
+   ```bash
+   python dataset_builder.py
+   ```
+
+7. **Train** — LSTM and Transformer with transaction cost awareness (cost=1.5 by default)
+
    ```bash
    python train.py lstm
    python train.py transformer
    ```
-   Models select best checkpoint by validation reward (penalized by 1.5 unit transaction costs by default).  
-   Uses recency weighting (α=2.0) to prioritize recent market patterns.  
+
+   Models select best checkpoint by validation reward (penalized by 1.5 unit transaction costs by default).
+   Uses recency weighting (α=2.0) to prioritize recent market patterns.
    To disable cost penalty: `python train.py lstm --transaction-cost 0`
 
-8. **Evaluate** — ML metrics, stability, backtest equity with transaction costs (0.2 spread by default)  
+8. **Evaluate** — ML metrics, stability, backtest equity with transaction costs (0.2 spread by default)
+
    ```bash
    python evaluate_ml.py
    python stability_analysis.py
@@ -102,14 +127,21 @@ Activate the venv, then:
    python backtester.py --both         # Both models with costs
    python backtester.py --both --spread 0.0  # Gross profit (no costs)
    ```
-   Transaction costs default to **0.2 units spread** (realistic for NAS100).  
+   Transaction costs default to **0.2 units spread** (realistic for NAS100).
    Use `--spread 0.0` for gross profits or `--spread 0.5` for conservative estimates.
 
-9. **Plots** — Backtest equity and stability → `results/plots/`  
-   `python visualize.py`
+9. **Plots** — Backtest equity and stability -> `results/plots/`
 
-10. **Live forward** — During NY open: MT5 + both models, signals and session P&L  
-    `python run_live_forward.py`  
+   ```bash
+   python scripts/generate_plots.py
+   ```
+
+10. **Live forward** — During NY open: MT5 + both models, signals and session P&L
+
+    ```bash
+    python run_live_forward.py
+    ```
+
     (Optional: `--symbol NDX100`, `--balance 10000`, `--risk 0.01`)
 
 ## Outputs
@@ -129,15 +161,13 @@ Activate the venv, then:
 - **[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)** - Codebase organization and file descriptions
 - **[THESIS_RESULTS.md](THESIS_RESULTS.md)** - Complete research findings and analysis
 - **[REALISTIC_EXPECTATIONS.md](REALISTIC_EXPECTATIONS.md)** - ⚠️ **IMPORTANT**: Why 7-11% is excellent (not 196%)
-- **[STABILITY_METRICS_EXPLAINED.md](STABILITY_METRICS_EXPLAINED.md)** - Understanding stability metrics and the "stability paradox"
-- **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** - Command reference and troubleshooting
-- **[CHANGELOG.md](CHANGELOG.md)** - Version history and migration guide
+
 
 ## Citation
 
 If you use this code in your research, please cite:
 
-```
+```latex
 @mastersthesis{yourlastname2026,
   title={Comparing LSTM and Transformer Stability on High-Volatility Nasdaq100 Opening Session},
   author={Your Name},

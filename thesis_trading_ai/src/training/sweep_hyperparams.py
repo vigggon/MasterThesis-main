@@ -116,7 +116,7 @@ def _backtest_config(exp_dir: Path, model_name: str, cfg: dict) -> dict | None:
         probs = torch.softmax(logits, dim=1).numpy()
 
     # Import backtester functions
-    from evaluation.backtester import _returns_from_probs, equity_curve, max_drawdown, sharpe, profit_factor
+    from backtesting.backtester import _returns_from_probs, equity_curve, max_drawdown, sharpe, profit_factor
 
     # Load raw data for walk-forward
     raw_path = PROCESSED_DIR.parent / "features" / "open_features.csv"

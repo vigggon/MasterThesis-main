@@ -11,7 +11,7 @@ import numpy as np
 # Ensure project root is in path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from evaluation.backtester import load_backtest_data_and_predictions, generate_trade_table, _get_threshold
+from backtesting.backtester import load_backtest_data_and_predictions, generate_trade_table, _get_threshold
 from utils import RESULTS_ROOT, MIN_ATR, DAILY_STOP_R, DAILY_TP_R
 
 def run_generate_primary_data():
