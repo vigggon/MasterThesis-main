@@ -40,7 +40,7 @@ def generate_assets():
         plt.ylabel("Profit (R-Multiples)")
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig(plot_dir / f"equity_curve_{model_name}.png", dpi=300)
+        plt.savefig(plot_dir / f"equity_curve_{model_name}.pdf")
         plt.close()
 
     # 2. Performance Comparison
@@ -60,7 +60,7 @@ def generate_assets():
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig(plot_dir / "performance_comparison.png", dpi=300)
+    plt.savefig(plot_dir / "performance_comparison.pdf")
     plt.close()
 
     # 3. Monte Carlo Distributions
@@ -88,7 +88,7 @@ def generate_assets():
         plt.ylabel("Frequency")
         plt.legend()
         plt.tight_layout()
-        plt.savefig(plot_dir / f"monte_carlo_{model_name}.png", dpi=300)
+        plt.savefig(plot_dir / f"monte_carlo_{model_name}.pdf")
         plt.close()
 
     # 4. Daily Return Distributions (Stability)
@@ -110,7 +110,7 @@ def generate_assets():
         plt.ylabel("Frequency (Days)")
         plt.legend()
         plt.tight_layout()
-        plt.savefig(plot_dir / f"daily_pnl_dist_{model_name}.png", dpi=300)
+        plt.savefig(plot_dir / f"daily_pnl_dist_{model_name}.pdf")
         plt.close()
 
     # 5. Stability Metrics Comparison
@@ -136,7 +136,7 @@ def generate_assets():
     plt.ylabel("R-Multiples")
     plt.grid(axis='y', alpha=0.3)
     plt.tight_layout()
-    plt.savefig(plot_dir / "stability_metrics_comparison.png", dpi=300)
+    plt.savefig(plot_dir / "stability_metrics_comparison.pdf")
     plt.close()
 
     print(f"All assets generated in {plot_dir}")

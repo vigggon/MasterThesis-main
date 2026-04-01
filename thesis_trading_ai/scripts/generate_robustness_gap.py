@@ -44,5 +44,5 @@ plt.annotate('', xy=(19, 0.10), xytext=(152, 13.1),
              arrowprops=dict(arrowstyle="->", color=colors['BiLSTM'], lw=2, alpha=0.4, linestyle=':'))
 
 plt.tight_layout()
-plt.savefig('results/plots/robustness_gap_analysis.png', dpi=300)
-print("Plot saved to results/plots/robustness_gap_analysis.png")
+plt.savefig('results/plots/robustness_gap_analysis.pdf')
+print("Plot saved to results/plots/robustness_gap_analysis.pdf")

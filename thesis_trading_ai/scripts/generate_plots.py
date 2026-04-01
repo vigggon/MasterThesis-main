@@ -27,7 +27,7 @@ def plot_drawdown_comparison(df_eq_bt, df_eq_lv, model_name, plot_dir):
     plt.ylabel("Drawdown (%)")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(plot_dir / f"drawdown_comparison_{model_name.lower()}.png", dpi=300)
+    plt.savefig(plot_dir / f"drawdown_comparison_{model_name.lower()}.pdf")
     plt.close()
 
 def plot_trade_returns_histogram(df_trades, model_name, plot_dir, prefix):
@@ -40,7 +40,7 @@ def plot_trade_returns_histogram(df_trades, model_name, plot_dir, prefix):
     plt.xlabel("Return (%)" if 'return_pct' in df_trades else "Return (R)")
     plt.ylabel("Frequency")
     plt.tight_layout()
-    plt.savefig(plot_dir / f"returns_hist_{model_name.lower()}_{prefix.lower()}.png", dpi=300)
+    plt.savefig(plot_dir / f"returns_hist_{model_name.lower()}_{prefix.lower()}.pdf")
     plt.close()
 
 def plot_volatility_performance_overlay(df_trades, model_name, plot_dir):
@@ -62,7 +62,7 @@ def plot_volatility_performance_overlay(df_trades, model_name, plot_dir):
     plt.plot(df_trades[vol_col], p(df_trades[vol_col]), "r--", alpha=0.8, label='Trend')
     
     plt.tight_layout()
-    plt.savefig(plot_dir / f"volatility_overlay_{model_name.lower()}.png", dpi=300)
+    plt.savefig(plot_dir / f"volatility_overlay_{model_name.lower()}.pdf")
     plt.close()
 
 def plot_equity_and_drawdown(df_equity_tx, df_equity_lstm, plot_dir, prefix):
@@ -84,7 +84,7 @@ def plot_equity_and_drawdown(df_equity_tx, df_equity_lstm, plot_dir, prefix):
     plt.ylabel("Equity")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(plot_dir / f"{prefix.lower()}_equity_curve.png", dpi=300)
+    plt.savefig(plot_dir / f"{prefix.lower()}_equity_curve.pdf")
     plt.close()
 
     # Drawdown
@@ -103,7 +103,7 @@ def plot_equity_and_drawdown(df_equity_tx, df_equity_lstm, plot_dir, prefix):
     plt.ylabel("Drawdown (%)")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(plot_dir / f"{prefix.lower()}_drawdown_curve.png", dpi=300)
+    plt.savefig(plot_dir / f"{prefix.lower()}_drawdown_curve.pdf")
     plt.close()
 
 def plot_returns_distribution(df_trades_tx, df_trades_lstm, plot_dir, prefix):
@@ -120,7 +120,7 @@ def plot_returns_distribution(df_trades_tx, df_trades_lstm, plot_dir, prefix):
     plt.ylabel("Frequency")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(plot_dir / f"{prefix.lower()}_returns_dist.png", dpi=300)
+    plt.savefig(plot_dir / f"{prefix.lower()}_returns_dist.pdf")
     plt.close()
 
 def plot_rolling_sharpe(df_trades_tx, df_trades_lstm, plot_dir, prefix, window=10):
@@ -150,7 +150,7 @@ def plot_rolling_sharpe(df_trades_tx, df_trades_lstm, plot_dir, prefix, window=1
     plt.ylabel("Sharpe Ratio")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(plot_dir / f"{prefix.lower()}_rolling_sharpe.png", dpi=300)
+    plt.savefig(plot_dir / f"{prefix.lower()}_rolling_sharpe.pdf")
     plt.close()
 
 def do_monte_carlo(trades_df, title_prefix, plot_dir):
@@ -176,7 +176,7 @@ def do_monte_carlo(trades_df, title_prefix, plot_dir):
     plt.ylabel("Frequency")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(plot_dir / f"backtest_monte_carlo_sharpe_{title_prefix.lower()}.png", dpi=300)
+    plt.savefig(plot_dir / f"backtest_monte_carlo_sharpe_{title_prefix.lower()}.pdf")
     plt.close()
 
     # CVaR 95 function removed: relying correctly on backtester's R-multiple stats
@@ -322,7 +322,7 @@ def main():
     plt.ylabel("Cumulative Return (%)")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(plot_dir / "live_trade_sequence_pnl.png", dpi=300)
+    plt.savefig(plot_dir / "live_trade_sequence_pnl.pdf")
     plt.close()
     
     lv_stats = []
@@ -362,7 +362,7 @@ def main():
             plt.ylabel("Cumulative Return (%)")
             plt.legend()
             plt.tight_layout()
-            plt.savefig(plot_dir / f"execution_fidelity_{model_name.lower()}.png", dpi=300)
+            plt.savefig(plot_dir / f"execution_fidelity_{model_name.lower()}.pdf")
             plt.close()
             
             # Log the divergence
@@ -380,7 +380,7 @@ def main():
             plt.legend()
             plt.grid(True, alpha=0.3)
             plt.tight_layout()
-            plt.savefig(plot_dir / f"mt5_actual_{model_name.lower()}.png", dpi=300)
+            plt.savefig(plot_dir / f"mt5_actual_{model_name.lower()}.pdf")
             plt.close()
 
     # ------------------
@@ -405,7 +405,7 @@ def main():
             plt.ylabel("Abstract Equity Baseline")
             plt.legend()
             plt.tight_layout()
-            plt.savefig(plot_dir / f"comparison_{model.lower()}.png", dpi=300)
+            plt.savefig(plot_dir / f"comparison_{model.lower()}.pdf")
             plt.close()
 
         # Drawdown Comparison
