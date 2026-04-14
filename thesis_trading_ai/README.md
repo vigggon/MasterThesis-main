@@ -34,7 +34,7 @@ See **[SETUP.md](SETUP.md)** for:
 
 | Model | Profit | Trades | Win Rate | Sharpe | Final Equity |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **LSTM** | +145.0 units | 368 | 46.5% | 1.036 | 408% |
+| **BiLSTM + Attn** | +145.0 units | 368 | 46.5% | 1.036 | 408% |
 | **Transformer** | +2.0 units | 25 | 36.0% | 0.059 | 102% |
 
 ### With 1.0 Unit Spread (Standardized Test)
@@ -42,20 +42,20 @@ See **[SETUP.md](SETUP.md)** for:
 | Model | Timeframe | Profit | Sharpe | Max DD | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Transformer** | **10 min** | **+284.1 R** | **1.69** | **-15.9%** | 🏆 **Champion** |
-| **LSTM** | **10 min** | **+148.8 R** | **1.11** | **-39.0%** | ✅ Profitable |
+| **BiLSTM + Attn** | **10 min** | **+148.8 R** | **1.11** | **-39.0%** | ✅ Profitable |
 
 ***Note**: Results verified on out-of-sample backtest data (Aug 2025 - Jan 2026).*
 
 ***Realistic Return:** Calculated with fixed position sizing (1 unit ≈ $10-15 on $10k account). For 5-minute intraday strategies, **7-11% over 6 months represents excellent performance** for an ML trading system. The "equity %" figures in raw backtester output use theoretical 1% risk compounding (unrealistic due to liquidity/scaling constraints).
 
-**Key Finding:** The pivot to **10-minute candles** was decisive. The **Transformer** model outperformed the LSTM significantly (+284 R vs +148 R) on this timeframe, benefiting from the reduced noise and clearer trend signals. Both models are profitable when trained on general data and filtered at inference time.
+**Key Finding:** The pivot to **10-minute candles** was decisive. The **Transformer** model outperformed the BiLSTM significantly (+284 R vs +148 R) on this timeframe, benefiting from the reduced noise and clearer trend signals. Both models are profitable when trained on general data and filtered at inference time.
 
 ## Data Splits (No Leakage)
 
 | Split | Period | Samples | Use |
 | :--- | :--- | :--- | :--- |
-| **Train** | Aug 2019 – Aug 2025 | 36,473 | Training + validation (recency-weighted) |
-| **Backtest** | Aug 2025 – Jan 2026 | 3,139 | Unseen evaluation with transaction costs |
+| **Train** | Jan 2019 – Aug 2025 | 36,473 | Training + validation (recency-weighted) |
+| **Backtest** | Aug 2025 – Jan 30 2026 | 3,139 | Unseen evaluation with transaction costs |
 | **Forward** | Live only | N/A | Real-time testing via `run_live_forward.py` |
 
 Data range: **Kaggle (2019-08 to 2024-08-09)** + **MT5 export (2024-08-29 to 2026-01-30)** merged by default (~20 day gap).
@@ -95,7 +95,7 @@ Activate the venv, then:
    python feature_engineering.py
    ```
 
-5. **Labels** — SL=1×ATR, TP=2.0×ATR (break-even 33.3%), max 12 bars → `data/labeled/open_labeled.csv`
+5. **Labels** — SL=1×ATR, TP=3.0×ATR (3:1 RR), max 12 bars → `data/labeled/open_labeled.csv`
 
    ```bash
    python label_generator.py
@@ -107,7 +107,7 @@ Activate the venv, then:
    python dataset_builder.py
    ```
 
-7. **Train** — LSTM and Transformer with transaction cost awareness (cost=1.5 by default)
+7. **Train** — BiLSTM and Transformer with transaction cost awareness (cost=1.5 by default)
 
    ```bash
    python train.py lstm
@@ -118,7 +118,7 @@ Activate the venv, then:
    Uses recency weighting (α=2.0) to prioritize recent market patterns.
    To disable cost penalty: `python train.py lstm --transaction-cost 0`
 
-8. **Evaluate** — ML metrics, stability, backtest equity with transaction costs (0.2 spread by default)
+8. **Evaluate** — ML metrics, stability, backtest equity with transaction costs (0.2 spread by default unless parameter is specified)
 
    ```bash
    python evaluate_ml.py
@@ -142,7 +142,7 @@ Activate the venv, then:
     python run_live_forward.py
     ```
 
-    (Optional: `--symbol NDX100`, `--balance 10000`, `--risk 0.01`)
+    (Optional: `--symbol USTEC`, `--balance 10000`, `--risk 0.01`)
 
 ## Outputs
 
