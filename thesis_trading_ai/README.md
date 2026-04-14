@@ -28,28 +28,6 @@ See **[SETUP.md](SETUP.md)** for:
 - **Period**: Aug 2025 – Jan 2026 (180 days, 3,139 samples)
 - **Evaluation**: With realistic 0.2 unit spread cost
 
-## Results Summary
-
-### Without Transaction Costs (Gross Profits)
-
-| Model | Profit | Trades | Win Rate | Sharpe | Final Equity |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **BiLSTM + Attn** | +145.0 units | 368 | 46.5% | 1.036 | 408% |
-| **Transformer** | +2.0 units | 25 | 36.0% | 0.059 | 102% |
-
-### With 1.0 Unit Spread (Standardized Test)
-
-| Model | Timeframe | Profit | Sharpe | Max DD | Status |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Transformer** | **10 min** | **+284.1 R** | **1.69** | **-15.9%** | 🏆 **Champion** |
-| **BiLSTM + Attn** | **10 min** | **+148.8 R** | **1.11** | **-39.0%** | ✅ Profitable |
-
-***Note**: Results verified on out-of-sample backtest data (Aug 2025 - Jan 2026).*
-
-***Realistic Return:** Calculated with fixed position sizing (1 unit ≈ $10-15 on $10k account). For 5-minute intraday strategies, **7-11% over 6 months represents excellent performance** for an ML trading system. The "equity %" figures in raw backtester output use theoretical 1% risk compounding (unrealistic due to liquidity/scaling constraints).
-
-**Key Finding:** The pivot to **10-minute candles** was decisive. The **Transformer** model outperformed the BiLSTM significantly (+284 R vs +148 R) on this timeframe, benefiting from the reduced noise and clearer trend signals. Both models are profitable when trained on general data and filtered at inference time.
-
 ## Data Splits (No Leakage)
 
 | Split | Period | Samples | Use |
