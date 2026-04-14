@@ -150,28 +150,8 @@ Activate the venv, then:
 - **experiments/** — `lstm_open/best.pt`, `transformer_open/best.pt`
 - **results/** — backtest equity/metrics, plots, `forward_test/live_signals.csv`, `forward_test/session_pnl.csv`
 
-## Notebook
-
-`notebooks/pipeline_overview.ipynb` — high-level pipeline overview (step list; run the steps above from `src/`).
-
 ## Documentation
 
 - **[README.md](README.md)** - Main documentation (this file)
 - **[SETUP.md](SETUP.md)** - Installation and environment setup
 - **[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)** - Codebase organization and file descriptions
-- **[THESIS_RESULTS.md](THESIS_RESULTS.md)** - Complete research findings and analysis
-- **[REALISTIC_EXPECTATIONS.md](REALISTIC_EXPECTATIONS.md)** - ⚠️ **IMPORTANT**: Why 7-11% is excellent (not 196%)
-
-
-## Citation
-
-If you use this code in your research, please cite:
-
-```latex
-@mastersthesis{yourlastname2026,
-  title={Comparing LSTM and Transformer Stability on High-Volatility Nasdaq100 Opening Session},
-  author={Your Name},
-  year={2026},
-  school={Your University}
-}
-```
