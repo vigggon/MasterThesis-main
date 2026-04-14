@@ -157,7 +157,9 @@ cython_debug/
 
 # Project specific ignores
 thesis_trading_ai/data/
-thesis_trading_ai/results/
+# Ignore plots and MT5 reports specifically
+thesis_trading_ai/results/plots/
+thesis_trading_ai/results/live/mt5_reports/
 thesis_trading_ai/logs/
 thesis_trading_ai/__pycache__/
 *.csv
